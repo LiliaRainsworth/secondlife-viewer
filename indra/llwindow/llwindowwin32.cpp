@@ -49,6 +49,7 @@
 #include "llthreadsafequeue.h"
 #include "stringize.h"
 #include "llframetimer.h"
+#include "llwatchdog.h"
 
 // System includes
 #include <commdlg.h>
@@ -204,6 +205,7 @@ HKL     LLWindowWin32::sWinInputLocale = 0;
 DWORD   LLWindowWin32::sWinIMEConversionMode = IME_CMODE_NATIVE;
 DWORD   LLWindowWin32::sWinIMESentenceMode = IME_SMODE_AUTOMATIC;
 LLCoordWindow LLWindowWin32::sWinIMEWindowPosition(-1,-1);
+HMODULE LLWindowWin32::sGLDLLHandle = nullptr;
 
 static HWND sWindowHandleForMessageBox = NULL;
 
@@ -364,7 +366,8 @@ static LLMonitorInfo sMonitorInfo;
 // the containing class a friend.
 struct LLWindowWin32::LLWindowWin32Thread : public LL::ThreadPool
 {
-    static const int MAX_QUEUE_SIZE = 2048;
+    static constexpr int MAX_QUEUE_SIZE = 2048;
+    static constexpr F32 WINDOW_TIMEOUT_SEC = 90.f;
 
     LLThreadSafeQueue<MSG> mMessageQueue;
 
@@ -426,6 +429,50 @@ struct LLWindowWin32::LLWindowWin32Thread : public LL::ThreadPool
         PostMessage(windowHandle, WM_POST_FUNCTION_, wparam, LPARAM(ptr));
     }
 
+    // Call from main thread.
+    void initTimeout()
+    {
+        // post into thread's queue to avoid threading issues
+        post([this]()
+        {
+            if (!mWindowTimeout)
+            {
+                mWindowTimeout = std::make_unique<LLWatchdogTimeout>("mainloop");
+                // supposed to be executed within run(),
+                // so no point checking if thread is alive
+                resumeTimeout("TimeoutInit");
+            }
+        });
+    }
+private:
+    // These timeout related functions are strictly for the thread.
+    void resumeTimeout(std::string_view state)
+    {
+        if (mWindowTimeout)
+        {
+            mWindowTimeout->setTimeout(WINDOW_TIMEOUT_SEC);
+            mWindowTimeout->start(state);
+        }
+    }
+
+    void pauseTimeout()
+    {
+        if (mWindowTimeout)
+        {
+            mWindowTimeout->stop();
+        }
+    }
+
+    void pingTimeout(std::string_view state)
+    {
+        if (mWindowTimeout)
+        {
+            mWindowTimeout->setTimeout(WINDOW_TIMEOUT_SEC);
+            mWindowTimeout->ping(state);
+        }
+    }
+
+public:
     using FuncType = std::function<void()>;
     // call GetMessage() and pull enqueue messages for later processing
     HWND mWindowHandleThrd = NULL;
@@ -436,6 +483,8 @@ struct LLWindowWin32::LLWindowWin32Thread : public LL::ThreadPool
     bool mGLReady = false;
     bool mGotGLBuffer = false;
     LLAtomicBool mDeleteOnExit = false;
+private:
+    std::unique_ptr<LLWatchdogTimeout> mWindowTimeout;
 };
 
 
@@ -458,7 +507,7 @@ LLWindowWin32::LLWindowWin32(LLWindowCallbacks* callbacks,
     mWindowThread = new LLWindowWin32Thread();
 
     //MAINT-516 -- force a load of opengl32.dll just in case windows went sideways
-    LoadLibrary(L"opengl32.dll");
+    sGLDLLHandle = LoadLibrary(L"opengl32.dll");
 
 
     if (mMaxCores != 0)
@@ -1689,6 +1738,8 @@ const   S32   max_format  = (S32)num_formats - 1;
         close();
         return false;
     }
+
+    gGLManager.initWGL(); // Reinit WGL functions once we have our full context
 
     if (!gGLManager.initGL())
     {
@@ -4595,6 +4646,11 @@ bool LLWindowWin32::getInputDevices(U32 device_type_filter,
     return false;
 }
 
+void LLWindowWin32::initWatchdog()
+{
+    mWindowThread->initTimeout();
+}
+
 F32 LLWindowWin32::getSystemUISize()
 {
     F32 scale_value = 1.f;
@@ -4654,6 +4710,18 @@ F32 LLWindowWin32::getSystemUISize()
 
     ReleaseDC(hWnd, hdc);
     return scale_value;
+}
+
+//static
+PROC WINAPI LLWindowWin32::getProcAddress(const char* func)
+{
+    PROC ret_func = wglGetProcAddress(func);
+    if (!ret_func && sGLDLLHandle)
+    {
+        // Try to fallback to OpenGL32.dll
+        ret_func = GetProcAddress(sGLDLLHandle, func);
+    }
+    return ret_func;
 }
 
 //static
@@ -4731,6 +4799,8 @@ void LLWindowWin32::LLWindowWin32Thread::checkDXMem()
         mGotGLBuffer = true;
         return;
     }
+
+    pauseTimeout();
 
     IDXGIFactory4* p_factory = nullptr;
 
@@ -4835,6 +4905,8 @@ void LLWindowWin32::LLWindowWin32Thread::checkDXMem()
     }
 
     mGotGLBuffer = true;
+
+    resumeTimeout("checkDXMem");
 }
 
 void LLWindowWin32::LLWindowWin32Thread::run()
@@ -4850,6 +4922,9 @@ void LLWindowWin32::LLWindowWin32Thread::run()
         timeBeginPeriod(llclamp((U32) 1, tc.wPeriodMin, tc.wPeriodMax));
     }
 
+    // Normally won't exist yet, but in case of re-init, make sure it's cleaned up
+    resumeTimeout("WindowThread");
+
     while (! getQueue().done())
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_WIN32;
@@ -4859,6 +4934,7 @@ void LLWindowWin32::LLWindowWin32Thread::run()
 
         if (mWindowHandleThrd != 0)
         {
+            pingTimeout("messages");
             MSG msg;
             BOOL status;
             if (mhDCThrd == 0)
@@ -4886,6 +4962,7 @@ void LLWindowWin32::LLWindowWin32Thread::run()
 
         {
             LL_PROFILE_ZONE_NAMED_CATEGORY_WIN32("w32t - Function Queue");
+            pingTimeout("queue");
             logger.onChange("runPending()");
             //process any pending functions
             getQueue().runPending();
@@ -4900,6 +4977,7 @@ void LLWindowWin32::LLWindowWin32Thread::run()
 #endif
     }
 
+    pauseTimeout();
     destroyWindow();
 
     if (mDeleteOnExit)

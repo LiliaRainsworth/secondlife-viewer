@@ -58,12 +58,6 @@
 #include "llmeshrepository.h"
 #include "llskinningutil.h"
 
-#if LL_LINUX
-// Work-around spurious used before init warning on Vector4a
-//
-#pragma GCC diagnostic ignored "-Wuninitialized"
-#endif
-
 #define LL_MAX_INDICES_COUNT 1000000
 
 static LLStaticHashedString sTextureIndexIn("texture_index_in");
@@ -646,7 +640,7 @@ void LLFace::renderOneWireframe(const LLColor4 &color, F32 fogCfx, bool wirefram
 
         LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
         glPolygonOffset(3.f, 3.f);
-        glLineWidth(5.f);
+        gGL.setLineWidth(5.f);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         renderFace(mDrawablep, this);
     }
@@ -2378,7 +2372,11 @@ F32 LLFace::adjustPartialOverlapPixelArea(F32 cos_angle_to_view_dir, F32 radius 
 
         //the above calculation is too expensive
         //the below is a good estimation: bounding box of the bounding sphere:
-        F32 alpha = 0.5f * (radius + screen_radius - d) / radius ;
+        F32 alpha = 1.f;
+        if (!is_approx_zero(radius)) // radius can be something like -1e-10
+        {
+            alpha = 0.5f * (radius + screen_radius - d) / radius;
+        }
         alpha = llclamp(alpha, 0.f, 1.f) ;
         return alpha * alpha ;
     }

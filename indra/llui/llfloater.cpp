@@ -239,7 +239,7 @@ void LLFloater::initClass()
 }
 
 // defaults for floater param block pulled from widgets/floater.xml
-static LLWidgetNameRegistry::StaticRegistrar sRegisterFloaterParams(&typeid(LLFloater::Params), "floater");
+static LLWidgetNameRegistry::StaticRegistrar sRegisterFloaterParams(typeid(LLFloater::Params), "floater");
 
 LLFloater::LLFloater(const LLSD& key, const LLFloater::Params& p)
 :   LLPanel(),  // intentionally do not pass params here, see initFromParams
@@ -248,6 +248,7 @@ LLFloater::LLFloater(const LLSD& key, const LLFloater::Params& p)
     mShortTitle(p.short_title),
     mSingleInstance(p.single_instance),
     mReuseInstance(p.reuse_instance.isProvided() ? p.reuse_instance : p.single_instance), // reuse single-instance floaters by default
+    mIsReuseInitialized(p.reuse_instance.isProvided()),
     mKey(key),
     mCanTearOff(p.can_tear_off),
     mCanMinimize(p.can_minimize),
@@ -3351,6 +3352,7 @@ void LLFloater::initFromParams(const LLFloater::Params& p)
     mLegacyHeaderHeight = p.legacy_header_height;
     mSingleInstance = p.single_instance;
     mReuseInstance = p.reuse_instance.isProvided() ? p.reuse_instance : p.single_instance;
+    mIsReuseInitialized = p.reuse_instance.isProvided();
 
     mDefaultRelativeX = p.rel_x;
     mDefaultRelativeY = p.rel_y;

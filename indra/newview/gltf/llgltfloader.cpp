@@ -489,7 +489,7 @@ void LLGLTFLoader::processNodeHierarchy(S32 node_idx, std::map<std::string, S32>
         }
         else
         {
-            setLoadState(ERROR_MODEL + pModel->getStatus());
+            setLoadState(static_cast<U32>(ERROR_MODEL) + static_cast<U32>(pModel->getStatus()));
             delete pModel;
             return;
         }
@@ -826,7 +826,8 @@ bool LLGLTFLoader::populateModelFromMesh(LLModel* pModel, const std::string& bas
                 LL_DEBUGS("GLTF_IMPORT") << "No normals found for primitive, using default normal." << LL_ENDL;
             }
 
-            vert.uv0 = glm::vec2(prim.mTexCoords0[i][0], -prim.mTexCoords0[i][1]);
+            // Flip texture V coordinate
+            vert.uv0 = glm::vec2(prim.mTexCoords0[i][0], 1.f - prim.mTexCoords0[i][1]);
 
             if (skinIdx >= 0)
             {
@@ -1769,7 +1770,7 @@ std::string LLGLTFLoader::extractTextureToTempFile(S32 textureIndex, const std::
                                                "gltf_embedded_" + texture_type + "_" + std::to_string(sourceIndex) + extension;
 
                     // Write the image data to the temporary file
-                    std::ofstream temp_file(temp_filename, std::ios::binary);
+                    llofstream temp_file(temp_filename, std::ios::binary);
                     if (temp_file.is_open())
                     {
                         temp_file.write(reinterpret_cast<const char*>(data_ptr), data_size);

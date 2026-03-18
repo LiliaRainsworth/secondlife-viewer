@@ -663,9 +663,10 @@ void LLViewerMedia::updateMedia(void *dummy_arg)
     LL_PROFILE_ZONE_SCOPED_CATEGORY_MEDIA; //LL_RECORD_BLOCK_TIME(FTM_MEDIA_UPDATE);
 
     llassert(!gCubeSnapshot);
+    static LLCachedControl<bool> use_read_thread(gSavedSettings, "PluginUseReadThread", true);
 
     // Enable/disable the plugin read thread
-    LLPluginProcessParent::setUseReadThread(gSavedSettings.getBOOL("PluginUseReadThread"));
+    LLPluginProcessParent::setUseReadThread(use_read_thread());
 
     // SL-16418 We can't call LLViewerMediaImpl->update() if we are in the state of shutting down.
     if(LLApp::isExiting())
@@ -1819,6 +1820,13 @@ LLPluginClassMedia* LLViewerMediaImpl::newSourceFromMediaType(std::string media_
     }
     else
     {
+#if LL_LINUX
+        if(plugin_basename == "media_plugin_gstreamer10" && gSavedSettings.getBOOL("MediaPluginForceVLC"))
+        {
+            plugin_basename = "media_plugin_libvlc";
+        }
+#endif
+
         std::string launcher_name = gDirUtilp->getLLPluginLauncher();
         std::string plugin_name = gDirUtilp->getLLPluginFilename(plugin_basename);
 
@@ -1826,16 +1834,13 @@ LLPluginClassMedia* LLViewerMediaImpl::newSourceFromMediaType(std::string media_
         user_data_path_cache += gDirUtilp->getDirDelimiter();
 
         // See if the plugin executable exists
-        llstat s;
-        if(LLFile::stat(launcher_name, &s))
+        if (!LLFile::isfile(launcher_name))
         {
             LL_WARNS_ONCE("Media") << "Couldn't find launcher at " << launcher_name << LL_ENDL;
         }
-        else if(LLFile::stat(plugin_name, &s))
+        else if (!LLFile::isfile(plugin_name))
         {
-#if !LL_LINUX
             LL_WARNS_ONCE("Media") << "Couldn't find plugin at " << plugin_name << LL_ENDL;
-#endif
         }
         else
         {
@@ -1867,6 +1872,11 @@ LLPluginClassMedia* LLViewerMediaImpl::newSourceFromMediaType(std::string media_
             bool media_plugin_debugging_enabled = gSavedSettings.getBOOL("MediaPluginDebugging");
             media_source->enableMediaPluginDebugging( media_plugin_debugging_enabled  || clean_browser);
 
+#if LL_LINUX
+            bool media_plugin_pipewire_volume_catcher = gSavedSettings.getBOOL("MediaPluginPipeWireVolumeCatcher");
+            media_source->enablePipeWireVolumeCatcher( media_plugin_pipewire_volume_catcher );
+#endif
+
             // need to set agent string here before instance created
             media_source->setBrowserUserAgent(LLViewerMedia::getInstance()->getCurrentUserAgent());
 
@@ -1888,9 +1898,7 @@ LLPluginClassMedia* LLViewerMediaImpl::newSourceFromMediaType(std::string media_
             }
         }
     }
-#if !LL_LINUX
     LL_WARNS_ONCE("Plugin") << "plugin initialization failed for mime type: " << media_type << LL_ENDL;
-#endif
 
     if(gAgent.isInitialized())
     {
@@ -2189,16 +2197,19 @@ void LLViewerMediaImpl::updateVolume()
 
         if (mProximityCamera > 0)
         {
-            if (mProximityCamera > gSavedSettings.getF32("MediaRollOffMax"))
+            static LLCachedControl<F32> media_rolloff_min(gSavedSettings, "MediaRollOffMin");
+            static LLCachedControl<F32> media_rolloff_max(gSavedSettings, "MediaRollOffMax");
+            static LLCachedControl<F32> media_rolloff_rate(gSavedSettings, "MediaRollOffRate");
+            if (mProximityCamera > media_rolloff_max())
             {
                 volume = 0;
             }
-            else if (mProximityCamera > gSavedSettings.getF32("MediaRollOffMin"))
+            else if (mProximityCamera > media_rolloff_min())
             {
                 // attenuated_volume = 1 / (roll_off_rate * (d - min))^2
                 // the +1 is there so that for distance 0 the volume stays the same
-                F64 adjusted_distance = mProximityCamera - gSavedSettings.getF32("MediaRollOffMin");
-                F64 attenuation = 1.0 + (gSavedSettings.getF32("MediaRollOffRate") * adjusted_distance);
+                F64 adjusted_distance = mProximityCamera - media_rolloff_min();
+                F64 attenuation = 1.0 + (media_rolloff_rate() * adjusted_distance);
                 attenuation = 1.0 / (attenuation * attenuation);
                 // the attenuation multiplier should never be more than one since that would increase volume
                 volume = volume * (F32)llmin(1.0, attenuation);
@@ -3615,7 +3626,7 @@ LLViewerMediaImpl::canUndo() const
     if (mMediaSource)
         return mMediaSource->canUndo();
     else
-        return FALSE;
+        return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3635,7 +3646,7 @@ LLViewerMediaImpl::canRedo() const
     if (mMediaSource)
         return mMediaSource->canRedo();
     else
-        return FALSE;
+        return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3715,7 +3726,7 @@ LLViewerMediaImpl::canDoDelete() const
     if (mMediaSource)
         return mMediaSource->canDoDelete();
     else
-        return FALSE;
+        return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3735,7 +3746,7 @@ LLViewerMediaImpl::canSelectAll() const
     if (mMediaSource)
         return mMediaSource->canSelectAll();
     else
-        return FALSE;
+        return false;
 }
 
 void LLViewerMediaImpl::setUpdated(bool updated)
